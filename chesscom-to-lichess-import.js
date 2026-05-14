@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chess.com -> Lichess Import
 // @namespace    https://github.com/Puhhh/chesscom-to-lichess-import
-// @version      2.1.1
+// @version      2.1.2
 // @description  Import the current Chess.com game to Lichess via PGN. Handles Share icon and Analyze -> ... -> Share flows.
 // @author       Puhhh
 // @match        https://www.chess.com/*
@@ -81,6 +81,17 @@
     outline-offset: 2px;
   }
 
+  .tm-lichess-icon {
+    width: 24px;
+    height: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 19px;
+    line-height: 1;
+    color: currentColor;
+  }
+
   .tm-lichess-error {
     font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
     font-size: 12px;
@@ -94,9 +105,18 @@
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'tm-lichess-menu-btn';
-    btn.textContent = 'Lichess Import';
     btn.title = 'Import current game to Lichess';
     btn.setAttribute('aria-label', 'Lichess Import');
+
+    const icon = document.createElement('span');
+    icon.className = 'tm-lichess-icon';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.textContent = '♞';
+
+    const labelEl = document.createElement('span');
+    labelEl.textContent = 'Lichess Import';
+
+    btn.append(icon, labelEl);
 
     // ---- show only on /game/* and /analysis/* ----
     function shouldShow() {
@@ -134,7 +154,7 @@
     function setBtn(disabled, label) {
         btn.disabled = disabled;
         btn.setAttribute('aria-busy', disabled ? 'true' : 'false');
-        btn.textContent = label;
+        labelEl.textContent = label;
     }
 
     function showError(message) {
