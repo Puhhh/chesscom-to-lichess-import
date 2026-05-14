@@ -1,8 +1,9 @@
 // ==UserScript==
 // @name         Chess.com -> Lichess Import
-// @namespace    tm-chess-transfer
-// @version      2.0.0
+// @namespace    https://github.com/Puhhh/chesscom-to-lichess-import
+// @version      2.0.1
 // @description  Two scenarios: (1) Analyze -> ... -> Share -> PGN; (2) Share icon -> PGN. Button above Search. Visible only on /game/* and /analysis/*.
+// @author       Puhhh
 // @match        https://www.chess.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
@@ -14,7 +15,7 @@
 
     // --------------- UI (native menu look, no background) ---------------
     GM_addStyle(`
-  .tm-lichess-menu-btn {
+    .tm-lichess-menu-btn {
     display: grid;
     grid-auto-flow: column;
     grid-template-columns: 24px auto;
@@ -191,7 +192,7 @@
         const shareIcon = document.querySelector('button[data-cy="sidebar-share-icon"]');
         if (shareIcon && isVisible(shareIcon)) {
             const existingDialog = findShareDialog();
-            shareIcon.click();
+            clickElement(shareIcon);
             dialog = await waitFor(() => {
                 const d = findShareDialog();
                 return (d && d !== existingDialog) ? d : null;
@@ -203,7 +204,7 @@
         // Scenario 1: Analyze -> ... -> Share
         const analyzeBtn = document.querySelector('button[data-cy="sidebar-header-end-button"]');
         if (analyzeBtn && isVisible(analyzeBtn)) {
-            analyzeBtn.click();
+            clickElement(analyzeBtn);
 
             const moreBtn = await waitFor(
                 () => document.querySelector('button[data-cy="analysis-secondary-controls-more-button"]'),
@@ -213,13 +214,13 @@
             if (!moreBtn) throw new Error('Не нашёл кнопку "…" в анализе.');
 
             await sleep(50); // let animation settle before clicking
-            moreBtn.click();
+            clickElement(moreBtn);
 
             const shareItem = await waitFor(() => findShareMenuItem(), 2500, 60);
             if (!shareItem) throw new Error('Не нашёл пункт «Поделиться партией» в меню после "…".');
-            shareItem.click();
+            clickElement(shareItem);
 
-            dialog = await waitFor(() => findShareDialog(), 3000, 60);
+            dialog = await waitFor(() => findShareDialog(), 5000, 60);
             if (!dialog) throw new Error('Окно «Поделиться» не открылось из меню анализа.');
 
             return await readPgnFromShareDialog(dialog);
@@ -228,11 +229,11 @@
         // Fallback: maybe already on analysis page
         const moreBtnFallback = document.querySelector('button[data-cy="analysis-secondary-controls-more-button"]');
         if (moreBtnFallback && isVisible(moreBtnFallback)) {
-            moreBtnFallback.click();
+            clickElement(moreBtnFallback);
             const shareItem = await waitFor(() => findShareMenuItem(), 2500, 60);
             if (!shareItem) throw new Error('Не нашёл пункт «Поделиться партией» в меню.');
-            shareItem.click();
-            dialog = await waitFor(() => findShareDialog(), 3000, 60);
+            clickElement(shareItem);
+            dialog = await waitFor(() => findShareDialog(), 5000, 60);
             if (!dialog) throw new Error('Окно «Поделиться» не открылось.');
             return await readPgnFromShareDialog(dialog);
         }
@@ -243,11 +244,31 @@
     // ==================== Share dialog helpers ====================
 
     function findShareDialog() {
-        const dialogs = Array.from(document.querySelectorAll('[role="dialog"]'));
-        return dialogs.find(d => {
-            const text = (d.textContent || '').toLowerCase();
-            return text.includes('поделиться') || text.includes('share');
-        }) || null;
+        const candidates = Array.from(document.querySelectorAll([
+            '[role="dialog"]',
+            '[aria-modal="true"]',
+            '[data-cy*="modal"]',
+            '[data-cy*="dialog"]',
+            '[class*="modal"]',
+            '[class*="dialog"]'
+        ].join(','))).filter(isVisible);
+
+        const byText = candidates.find(isShareDialogCandidate);
+        if (byText) return byText;
+
+        const pgnControl = Array.from(document.querySelectorAll('textarea, [role="tab"], button'))
+            .find(el => isVisible(el) && isPgnControl(el));
+        if (!pgnControl) return null;
+
+        return closestVisibleContainer(pgnControl, candidates) || closestShareContainerFromPgnControl(pgnControl);
+    }
+
+    function isShareDialogCandidate(el) {
+        const text = (el.textContent || '').toLowerCase();
+        return text.includes('поделиться')
+            || text.includes('share')
+            || text.includes('pgn')
+            || Boolean(el.querySelector('textarea'));
     }
 
     async function readPgnFromShareDialog(dialog) {
@@ -269,8 +290,8 @@
     function clickPgnTab(dialog) {
         // Scope to [role="tab"] and button only — avoid matching decorative divs
         const tabs = Array.from(dialog.querySelectorAll('[role="tab"], button'))
-            .filter(el => (el.textContent || '').trim().toLowerCase().includes('pgn'));
-        if (tabs.length) (tabs.find(t => t.getAttribute('role') === 'tab') || tabs[0]).click();
+            .filter(isPgnControl);
+        if (tabs.length) clickElement(tabs.find(t => t.getAttribute('role') === 'tab') || tabs[0]);
     }
 
     function findPgnTextarea(dialog) {
@@ -296,17 +317,18 @@
 
         // Try data-cy attribute first
         const byCy = scope.querySelector('[data-cy*="share"]');
-        if (byCy && isVisible(byCy)) return byCy;
+        if (byCy && isVisible(byCy)) return closestClickable(byCy);
 
         // Restrict to [role="menuitem"] only — avoids getBoundingClientRect on thousands of divs
         const items = Array.from(scope.querySelectorAll('[role="menuitem"]')).filter(isVisible);
 
-        return items.find(x => (x.textContent || '').trim().toLowerCase() === 'поделиться партией')
+        const item = items.find(x => (x.textContent || '').trim().toLowerCase() === 'поделиться партией')
             || items.find(x => {
                 const t = (x.textContent || '').toLowerCase();
                 return (t.includes('поделиться') || t.includes('share')) && (t.includes('парт') || t.includes('game'));
             })
             || null;
+        return item ? closestClickable(item) : null;
     }
 
     // ==================== Helpers ====================
@@ -322,6 +344,42 @@
             && /\[Event\s+".*?"\]/.test(s)
             && /\[Site\s+".*?"\]/.test(s)
             && /\d+\.\s*[A-Za-z]/.test(s); // require at least one move
+    }
+
+    function isPgnControl(el) {
+        const value = el.value || '';
+        const text = (el.textContent || '').trim().toLowerCase();
+        return /\[Event\s+"/i.test(value) || text.includes('pgn');
+    }
+
+    function closestClickable(el) {
+        return el.closest('button, a, [role="menuitem"], [role="button"], [tabindex]') || el;
+    }
+
+    function closestVisibleContainer(el, candidates) {
+        return candidates.find(candidate => candidate.contains(el)) || null;
+    }
+
+    function closestShareContainerFromPgnControl(el) {
+        let node = el.parentElement;
+        let candidate = null;
+        while (node && node !== document.body) {
+            if (isVisible(node)) {
+                const text = (node.textContent || '').toLowerCase();
+                if (node.querySelector('textarea') || text.includes('pgn') || text.includes('share') || text.includes('поделиться')) {
+                    candidate = node;
+                }
+            }
+            node = node.parentElement;
+        }
+        return candidate;
+    }
+
+    function clickElement(el) {
+        const target = closestClickable(el);
+        target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+        target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+        target.click();
     }
 
     function normalizePgn(pgn) { return pgn.replace(/\r\n/g, '\n').trim(); }
