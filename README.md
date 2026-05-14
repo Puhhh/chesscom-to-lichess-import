@@ -9,7 +9,7 @@
 
 ## Why This Exists
 
-Analyzing a Chess.com game on Lichess requires manually downloading a PGN, navigating to Lichess, and uploading it. This script eliminates all of that — one click and you're there.
+Analyzing a Chess.com game on Lichess requires manually downloading a PGN, navigating to Lichess, and uploading it. This script eliminates that manual copy-paste flow.
 
 ## Installation
 
@@ -31,7 +31,7 @@ The script clicks the Share icon in the sidebar, waits for the Share dialog to o
 
 The script clicks the Analyze button, then the "..." (more) button that appears, then the "Share game" menu item, and reads the PGN from the resulting dialog.
 
-Both paths use Lichess's public import API (`POST https://lichess.org/api/import`). No authentication or API tokens are required.
+Both paths save the extracted PGN in userscript storage, open `https://lichess.org/paste`, then submit Lichess's own import form from that Lichess tab. This avoids Chess.com's cross-origin form restrictions. The Lichess API import endpoint is not used because current Lichess API documentation shows it as token-authenticated.
 
 ## Compatibility
 
@@ -41,7 +41,7 @@ Both paths use Lichess's public import API (`POST https://lichess.org/api/import
 | Firefox | Tampermonkey, Violentmonkey, Greasemonkey |
 | Edge | Tampermonkey, Violentmonkey |
 
-The script uses `GM_xmlhttpRequest` and `GM_addStyle` — both available in Tampermonkey and Violentmonkey. Greasemonkey 4+ supports these as well but is less tested.
+The script uses `GM_addStyle`, `GM_setValue`, `GM_getValue`, `GM_deleteValue`, and `GM_openInTab`, which are available in Tampermonkey and Violentmonkey. Greasemonkey 4+ supports similar APIs but is less tested.
 
 ## Features
 
@@ -49,8 +49,17 @@ The script uses `GM_xmlhttpRequest` and `GM_addStyle` — both available in Tamp
 - Handles both Share icon and Analyze→Share flows automatically
 - Button blends into the native Chess.com sidebar design
 - Keyboard accessible (`focus-visible` outline, proper `disabled` state)
-- No API tokens, no login, no data stored locally
-- Falls back to a form-based POST if the API call fails
+- No API tokens and no login required; PGN is stored only temporarily while opening the Lichess tab
+- Uses Lichess's public import form instead of a token-authenticated API call
+- Avoids cross-origin form submission from Chess.com by completing the import on `lichess.org/paste`
+
+## Troubleshooting
+
+If the button does not appear, confirm you are on a Chess.com `/game/*` or `/analysis/*` page. The script intentionally hides the button on other pages.
+
+If the script reports that PGN was not found, Chess.com may have changed the Share dialog or menu selectors. Re-test both the Share icon path and the Analyze → More → Share game path before changing selectors.
+
+If Lichess opens but does not import the game, confirm the userscript is allowed to run on `https://lichess.org/paste`. Then paste the same PGN into <https://lichess.org/paste>. If manual import also fails, the extracted PGN is invalid or Lichess rejected it.
 
 ## Disclaimer
 

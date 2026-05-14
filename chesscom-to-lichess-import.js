@@ -1,17 +1,27 @@
 // ==UserScript==
 // @name         Chess.com -> Lichess Import
 // @namespace    https://github.com/Puhhh/chesscom-to-lichess-import
-// @version      2.0.1
-// @description  Two scenarios: (1) Analyze -> ... -> Share -> PGN; (2) Share icon -> PGN. Button above Search. Visible only on /game/* and /analysis/*.
+// @version      2.1.1
+// @description  Import the current Chess.com game to Lichess via PGN. Handles Share icon and Analyze -> ... -> Share flows.
 // @author       Puhhh
 // @match        https://www.chess.com/*
-// @grant        GM_xmlhttpRequest
+// @match        https://lichess.org/paste*
 // @grant        GM_addStyle
-// @connect      lichess.org
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @grant        GM_deleteValue
+// @grant        GM_openInTab
 // ==/UserScript==
 
 (function () {
     'use strict';
+
+    const pendingPgnKey = 'pendingLichessImportPgn';
+
+    if (location.hostname === 'lichess.org') {
+        submitPendingPgnOnLichess();
+        return;
+    }
 
     // --------------- UI (native menu look, no background) ---------------
     GM_addStyle(`
@@ -169,10 +179,16 @@
 
     function observeDomForSidebar() {
         const mo = new MutationObserver(debouncedUpdate);
-        mo.observe(document.body, { childList: true, subtree: true, attributes: false, characterData: false });
+        mo.observe(document.body, { childList: true, subtree: true });
     }
 
     function interceptNavigation() {
+        if (history.__tmLichessImportPatched) return;
+        Object.defineProperty(history, '__tmLichessImportPatched', {
+            value: true,
+            configurable: false
+        });
+
         window.addEventListener('popstate', updateButtonVisibility);
 
         const origPush = history.pushState.bind(history);
@@ -184,61 +200,58 @@
     // ==================== Two scenarios ====================
 
     async function getPgnByTwoScenarios() {
-        // If share dialog already open -> read
-        let dialog = findShareDialog();
-        if (dialog) return await readPgnFromShareDialog(dialog);
+        const openDialog = findShareDialog();
+        if (openDialog) return await readPgnFromShareDialog(openDialog);
 
-        // Scenario 2: Share icon
+        const shareIconDialog = await openShareDialogFromSidebarIcon();
+        if (shareIconDialog) return await readPgnFromShareDialog(shareIconDialog);
+
+        const analysisDialog = await openShareDialogFromAnalysis();
+        if (analysisDialog) return await readPgnFromShareDialog(analysisDialog);
+
+        throw new Error('Не нашёл ни кнопку «Поделиться», ни «Анализ» на этой странице.');
+    }
+
+    async function openShareDialogFromSidebarIcon() {
         const shareIcon = document.querySelector('button[data-cy="sidebar-share-icon"]');
-        if (shareIcon && isVisible(shareIcon)) {
-            const existingDialog = findShareDialog();
-            clickElement(shareIcon);
-            dialog = await waitFor(() => {
-                const d = findShareDialog();
-                return (d && d !== existingDialog) ? d : null;
-            }, 3000, 60);
-            if (!dialog) throw new Error('Окно «Поделиться» не открылось после кнопки Поделиться.');
-            return await readPgnFromShareDialog(dialog);
-        }
+        if (!shareIcon || !isVisible(shareIcon)) return null;
 
-        // Scenario 1: Analyze -> ... -> Share
+        const existingDialog = findShareDialog();
+        clickElement(shareIcon);
+
+        const dialog = await waitFor(() => {
+            const d = findShareDialog();
+            return (d && d !== existingDialog) ? d : null;
+        }, 3000, 60);
+        if (!dialog) throw new Error('Окно «Поделиться» не открылось после кнопки Поделиться.');
+
+        return dialog;
+    }
+
+    async function openShareDialogFromAnalysis() {
         const analyzeBtn = document.querySelector('button[data-cy="sidebar-header-end-button"]');
         if (analyzeBtn && isVisible(analyzeBtn)) {
             clickElement(analyzeBtn);
-
-            const moreBtn = await waitFor(
-                () => document.querySelector('button[data-cy="analysis-secondary-controls-more-button"]'),
-                6000,
-                80
-            );
-            if (!moreBtn) throw new Error('Не нашёл кнопку "…" в анализе.');
-
-            await sleep(50); // let animation settle before clicking
-            clickElement(moreBtn);
-
-            const shareItem = await waitFor(() => findShareMenuItem(), 2500, 60);
-            if (!shareItem) throw new Error('Не нашёл пункт «Поделиться партией» в меню после "…".');
-            clickElement(shareItem);
-
-            dialog = await waitFor(() => findShareDialog(), 5000, 60);
-            if (!dialog) throw new Error('Окно «Поделиться» не открылось из меню анализа.');
-
-            return await readPgnFromShareDialog(dialog);
         }
 
-        // Fallback: maybe already on analysis page
-        const moreBtnFallback = document.querySelector('button[data-cy="analysis-secondary-controls-more-button"]');
-        if (moreBtnFallback && isVisible(moreBtnFallback)) {
-            clickElement(moreBtnFallback);
-            const shareItem = await waitFor(() => findShareMenuItem(), 2500, 60);
-            if (!shareItem) throw new Error('Не нашёл пункт «Поделиться партией» в меню.');
-            clickElement(shareItem);
-            dialog = await waitFor(() => findShareDialog(), 5000, 60);
-            if (!dialog) throw new Error('Окно «Поделиться» не открылось.');
-            return await readPgnFromShareDialog(dialog);
-        }
+        const moreBtn = await waitFor(
+            () => visibleElement('button[data-cy="analysis-secondary-controls-more-button"]'),
+            analyzeBtn ? 6000 : 1500,
+            80
+        );
+        if (!moreBtn) return null;
 
-        throw new Error('Не нашёл ни кнопку «Поделиться», ни «Анализ» на этой странице.');
+        await sleep(50);
+        clickElement(moreBtn);
+
+        const shareItem = await waitFor(() => findShareMenuItem(), 2500, 60);
+        if (!shareItem) throw new Error('Не нашёл пункт «Поделиться партией» в меню после "…".');
+        clickElement(shareItem);
+
+        const dialog = await waitFor(() => findShareDialog(), 5000, 60);
+        if (!dialog) throw new Error('Окно «Поделиться» не открылось из меню анализа.');
+
+        return dialog;
     }
 
     // ==================== Share dialog helpers ====================
@@ -265,10 +278,11 @@
 
     function isShareDialogCandidate(el) {
         const text = (el.textContent || '').toLowerCase();
-        return text.includes('поделиться')
-            || text.includes('share')
-            || text.includes('pgn')
-            || Boolean(el.querySelector('textarea'));
+        const hasShareText = text.includes('поделиться') || text.includes('share');
+        const hasPgnText = text.includes('pgn');
+        const hasPgnTextarea = Array.from(el.querySelectorAll('textarea'))
+            .some(ta => /\[Event\s+"/i.test(ta.value || ta.textContent || ''));
+        return hasShareText || hasPgnText || hasPgnTextarea;
     }
 
     async function readPgnFromShareDialog(dialog) {
@@ -339,6 +353,11 @@
         return r.width > 0 && r.height > 0;
     }
 
+    function visibleElement(selector) {
+        const el = document.querySelector(selector);
+        return isVisible(el) ? el : null;
+    }
+
     function looksLikePgn(s) {
         return typeof s === 'string'
             && /\[Event\s+".*?"\]/.test(s)
@@ -403,48 +422,24 @@
     // ==================== Lichess import ====================
 
     async function importAndOpen(pgn) {
-        const api = await importViaApi(pgn);
-        if (api?.url) {
-            window.open(api.url, '_blank', 'noopener');
-            return;
-        }
-        openViaForm(pgn);
+        GM_setValue(pendingPgnKey, pgn);
+        GM_openInTab('https://lichess.org/paste', { active: true, setParent: true });
     }
 
-    async function importViaApi(pgn) {
-        return new Promise((resolve, reject) => {
-            GM_xmlhttpRequest({
-                method: 'POST',
-                url: 'https://lichess.org/api/import',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
-                data: 'pgn=' + encodeURIComponent(pgn),
-                responseType: 'json',
-                onload: r => {
-                    if (r.status >= 200 && r.status < 300) {
-                        resolve(r.response || null);
-                    } else {
-                        // Surface Lichess error (e.g. invalid PGN) instead of silently falling back
-                        const errMsg = r.response?.error || `HTTP ${r.status}`;
-                        reject(new Error('Lichess: ' + errMsg));
-                    }
-                },
-                onerror: () => resolve(null) // network error → try form fallback
-            });
-        });
-    }
+    async function submitPendingPgnOnLichess() {
+        const pgn = GM_getValue(pendingPgnKey, '');
+        if (!pgn || !looksLikePgn(pgn)) return;
 
-    function openViaForm(pgn) {
-        const f = document.createElement('form');
-        f.method = 'POST';
-        f.action = 'https://lichess.org/api/import';
-        f.target = '_blank';
-        const i = document.createElement('input');
-        i.type = 'hidden'; i.name = 'pgn'; i.value = pgn;
-        f.appendChild(i);
-        document.body.appendChild(f);
-        f.submit();
-        // Delay removal to ensure the request is dispatched before the element is removed
-        setTimeout(() => f.remove(), 1000);
+        const textarea = await waitFor(() => document.querySelector('textarea[name="pgn"]'), 6000, 80);
+        const form = textarea?.closest('form');
+        if (!textarea || !form) return;
+
+        GM_deleteValue(pendingPgnKey);
+
+        textarea.value = pgn;
+        textarea.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: pgn }));
+        textarea.dispatchEvent(new Event('change', { bubbles: true }));
+        form.submit();
     }
 
 })();
